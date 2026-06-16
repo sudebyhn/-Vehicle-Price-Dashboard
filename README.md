@@ -8,8 +8,7 @@ An internal analytics dashboard for tracking and comparing vehicle prices across
 
 ## 🖼️ Screenshots
 
-![Dashboard Screenshots]
-(screenshots/Project%20pages%20Screenshots.png)---
+screenshots/Project pages Screenshots
 
 ## 💡 What This System Does
 
