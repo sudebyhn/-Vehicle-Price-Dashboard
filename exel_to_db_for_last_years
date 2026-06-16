@@ -1,0 +1,250 @@
+import pandas as pd
+import pyodbc
+import re
+
+print("🚀 Script başladı")
+
+# =========================
+# MSSQL BAĞLANTI
+# =========================
+conn = pyodbc.connect(
+xxxx)
+
+cursor = conn.cursor()
+print(" DB bağlantısı OK")
+
+#NOR: Yeni EXEL  eklenmesi gerektiğinde SADECE -> paths VE path_year_map  tanımlanması gerek  tek seferde insert toplu yapacaktır.
+# =========================
+# EXCEL PATHS (MULTI YEAR)
+# =========================
+paths = [
+    r"Y:\YUCE AUTO GENEL\Urun_fiyat_excel\x3_UrunRPA.xlsx",  # 2023
+    r"Y:\YUCE AUTO GENEL\Uruxv_Years\2024_UrunRPA.xlsx",  # 2024
+    r"Y:\YUCE AUTO GENEL\Urun_fiyat_excel\Prev_YexunRPA.xlsx",  # 2025
+]
+
+# =========================
+# PATH → YIL MANUEL MAPPING 
+# =========================
+path_year_map = {
+    r"Y:\YUCE AUTO GENEL\Urunxcel\Prev_Years\2023_UrunRPA.xlsx": 2023,
+    r"Y:\YUCE AUTO GENEL\Urun_fiyat_excel\Prev_YearsxnRPA.xlsx": 2024,
+    r"Y:\YUCE AUTO GENEL\Urxel\Prev_Years\2025_UrunRPA.xlsx": 2025,
+}
+
+total_insert = 0
+ 
+# =========================
+# SHEET LOOP
+# =========================
+# 
+# #eğer olurda eklenirse  diye eklendi 
+
+ignore_sheets = ["Özet", "Kampanyalar", "Liste - Transaction Geçiş"]
+for path in paths:
+    print(f"\n📂 Dosya işleniyor: {path}")
+
+    excel_yil = path_year_map[path] #exelin yılı
+
+    print(f"📅 Excel yılı: {excel_yil}")
+
+
+    #okuması için xls objesi oluşturuyoruz
+    xls = pd.ExcelFile(path)
+
+    for sheet_name in xls.sheet_names:
+
+        if sheet_name in ignore_sheets:
+            print(f"⛔ Skip sheet: {sheet_name}")
+            continue
+
+        print(f"\n📄 Sheet: {sheet_name}")
+
+        df = pd.read_excel(xls, sheet_name=sheet_name)
+
+        seen = set()
+        new_cols = []
+        keep_mask = []
+
+        for col in df.columns:
+            col_clean = re.sub(r"\.\d+$", "", str(col))  # .1 temizle
+
+            if col_clean in seen:
+                keep_mask.append(False)  #  alma
+            else:
+                seen.add(col_clean)
+                keep_mask.append(True)   #  al
+
+            new_cols.append(col_clean)
+
+        df.columns = new_cols
+        df = df.loc[:, keep_mask]
+        print("🧠 Final kolonlar:", df.columns.tolist())
+
+        if df.shape[0] == 0:
+            continue
+
+        # ilk kolon = model name olsun 
+        df.rename(columns={df.columns[0]: "model_name"}, inplace=True)
+
+        # model filtre (güçlendirildi)
+        df = df[
+            df["model_name"].notna() &
+            ~df["model_name"].astype(str).str.contains("Ortalama|Toplam", case=False, na=False)
+        ]
+
+        print(f"➡ Model satır sayısı: {len(df)}")
+
+        # =========================
+        # MODEL YIL PARSE + FİLTRE
+        # =========================
+
+        df["model_year"] = df["model_name"].astype(str).str.extract(r"\b(20\d{2})\b")[0]
+        df["model_year"] = pd.to_numeric(df["model_year"], errors="coerce")
+
+        df = df[
+            (df["model_year"] == excel_yil) |
+            (df["model_year"].isna())
+        ]
+
+        print(f"🎯 Filtre sonrası kalan model: {len(df)}")
+
+        # =========================
+        # TARİH KOLONLARI
+        # =========================
+        stop_keywords = ["Yıllık", "%","Değişim","değişim","yıllık"]
+
+        date_columns = []
+
+        for col in df.columns[1:]:
+            col_str = str(col)
+
+            if "Unnamed" in col_str:
+                continue
+
+            if any(k in col_str for k in stop_keywords):
+                print(f"⛔ Stop column bulundu: {col}")
+                break
+
+            date_columns.append(col)
+
+        print(f"📅 Tarih kolonları: {len(date_columns)}")
+
+        if len(date_columns) == 0:
+            continue
+
+        df = df[["model_name"] + date_columns]
+
+        # =========================
+        # UNPIVOT
+        # =========================
+        df_long = df.melt(
+            id_vars=["model_name"],
+            var_name="price_date",
+            value_name="price"
+        )
+
+
+        print(f"➡ Melt sonrası: {len(df_long)}")
+
+        # fiyat temizle boşlukları sil
+        df_long["price"] = df_long["price"].astype(str).str.strip()
+
+        # "-" veya boş → NULL yapıyor
+        df_long["price"] = df_long["price"].replace(
+            to_replace=r"^-?$",
+            value=None,
+            regex=True
+        )
+
+        # sayıya çevir
+        df_long["price"] = pd.to_numeric(
+            df_long["price"].str.replace(r"[^\d]", "", regex=True),
+            errors="coerce"
+        )
+
+        # NaN → None (SQL NULL)
+        df_long["price"] = df_long["price"].where(pd.notna(df_long["price"]), None)
+
+        print(f"💰 Temiz fiyat sayısı: {len(df_long)}")
+
+        if len(df_long) == 0:
+            continue
+
+        # =========================
+        # TARİH (CASE SAFE)
+        # =========================
+        turkish_months = {
+            "ocak": "January",
+            "şubat": "February",
+            "mart": "March",
+            "nisan": "April",
+            "mayıs": "May",
+            "haziran": "June",
+            "temmuz": "July",
+            "ağustos": "August",
+            "eylül": "September",
+            "ekim": "October",
+            "kasım": "November",
+            "aralık": "December"
+        }
+
+        def convert_turkish_date(date_val):
+            if isinstance(date_val, pd.Timestamp):
+                return date_val
+
+            date_str = str(date_val)
+            date_str_lower = date_str.lower()
+
+            for tr, en in turkish_months.items():
+                if tr in date_str_lower:
+                    date_str = re.sub(tr, en, date_str, flags=re.IGNORECASE)
+
+            try:
+                return pd.to_datetime(date_str, dayfirst=True)  #string parse eder kolonları
+            except:
+                print("❌ Tarih parse edilemedi:", date_val)
+                return None
+
+        df_long["price_date"] = df_long["price_date"].apply(convert_turkish_date)
+
+        df_long = df_long[df_long["price_date"].notna()]
+
+        # =========================
+        # BRAND
+        # =========================
+        df_long["brand"] = sheet_name
+
+        # =========================
+        # INSERT
+        # =========================
+        insert_query = """
+        INSERT INTO [Raporlar].[dbo].[Car_Price_List]
+        (brand, model_name, price, price_date, excel_year)
+        VALUES (?, ?, ?, ?, ?)
+        """
+
+        rows = [
+            (
+                row["brand"],
+                row["model_name"],
+                int(row["price"]) if pd.notna(row["price"]) else None,
+                row["price_date"],
+                excel_yil
+            )
+            for _, row in df_long.iterrows()
+        ]
+
+        if len(rows) > 0:
+            cursor.executemany(insert_query, rows)
+            total_insert += len(rows)
+            print(f"✅ Insert edilen: {len(rows)}")
+
+# =========================
+# FINISH
+# =========================
+conn.commit()
+cursor.close()
+conn.close()
+
+print(f"\n🎯 TOPLAM INSERT: {total_insert}")
