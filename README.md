@@ -151,9 +151,4 @@ Each model gets a status: full data, has gaps, or no current price. Trend direct
 
 ---
 
-## 👩‍💻 Author
 
-Built by [Sude Bayhan](https://linkedin.com/in/sude-bayhan) at Skoda Yuce Auto.
-Pipeline, backend API design, and full dashboard architecture.
-
-© 2026 Sude Bayhan. All rights reserved. This project is not licensed for use, modification, or distribution.
